@@ -9,7 +9,8 @@ func InitWebAuthn() error {
 	Web, err = webauthn.New(&webauthn.Config{
 		RPDisplayName: "WebAuthn Go",
 		RPID:          "localhost",
-		RPOrigin:      "http://localhost:8000",
+		RPOrigin:      "http://localhost:8082",
+		Debug:         true,
 	})
 	return err
 }

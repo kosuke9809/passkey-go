@@ -4,116 +4,204 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Passkey Auth</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        input, button {
+            margin: 10px 0;
+            padding: 5px;
+        }
+        #loading, #debug {
+            display: none;
+            color: #666;
+            margin-top: 20px;
+        }
+    </style>
 </head>
 <body>
     <h1>Passkey Auth</h1>
     <div>
         <h2>Register</h2>
+        <label for="registerUsername">Username:</label>
         <input type="text" id="registerUsername" placeholder="Username">
-        <button onclick="register()">Register</button>
+        <button onclick="register()" id="registerButton">Register</button>
     </div>
     <div>
         <h2>Login</h2>
+        <label for="loginUsername">Username:</label>
         <input type="text" id="loginUsername" placeholder="Username">
-        <button onclick="login()">Login</button>
+        <button onclick="login()" id="loginButton">Login</button>
     </div>
-    <script src="https://unpkg.com/@simplewebauthn/browser"></script>
+    <div id="loading">Processing...</div>
+    <div id="debug"></div>
+    <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
     <script>
-        async function webAuhtnAPI(url, username) {
+        function debugLog(message) {
+            console.log(message);
+            const debugElement = document.getElementById('debug');
+            debugElement.style.display = 'block';
+            debugElement.innerHTML += message + '<br>';
+        }
+
+        async function webAuthnAPI(url, username) {
+            debugLog(`Calling ${url} with username: ${username}`);
             const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ username})
+                body: JSON.stringify({ username: username })
             });
+            debugLog(`Response status: ${response.status}`);
             if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`);
+                const contentType = response.headers.get("content-type");
+                debugLog(`Response content type: ${contentType}`);
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || `HTTP error! Status: ${response.status}`);
+                } else {
+                    const errorText = await response.text();
+                    debugLog(`Error response text: ${errorText}`);
+                    throw new Error(errorText || `HTTP error! Status: ${response.status}`);
+                }
             }
-            return await response.json();
+            const responseData = await response.json();
+            debugLog(`Response data: ${JSON.stringify(responseData)}`);
+            return responseData;
         }
-        
         async function register() {
-            console.log("Register Start")
-            const username = document.getElementById('registerUsername').value;
-            if (!username) {
-                alert('Username is required');
-                return
-            }
+            const button = document.getElementById('registerButton');
+            button.disabled = true;
+            showLoading();
         
             try {
-                const optionsResponse = await webAuhtnAPI('/register/begin', username)
-        
-                const publicKeyCredentialCreationOptions = {
-                    ...optionsResponse,
-                    challenge: base64URLToUint8Array(optionsResponse.challenge),
-                    allowCredentials: optionsResponse.allowCredentials.map(cred => ({
-                        ...cred,
-                        id: base64URLToUint8Array(cred.id)
-                    }))
+                const username = document.getElementById('registerUsername').value;
+                if (!username) {
+                    throw new Error('Username is required');
                 }
+        
+                debugLog('Starting registration process');
+                const optionsResponse = await webAuthnAPI('/register/begin', username);
+        
+                debugLog('Creating credential');
+                if (!optionsResponse || !optionsResponse.publicKey) {
+                    throw new Error('Invalid options received from server');
+                }
+
+                const publicKeyCredentialCreationOptions = {
+                    ...optionsResponse.publicKey,
+                    challenge: base64URLToUint8Array(optionsResponse.publicKey.challenge),
+                    user: {
+                        ...optionsResponse.publicKey.user,
+                        id: base64URLToUint8Array(optionsResponse.publicKey.user.id),
+                    }
+                };
         
                 const credential = await navigator.credentials.create({
                     publicKey: publicKeyCredentialCreationOptions
-                })
+                });
         
+                debugLog('Credential created, finishing registration');
+                debugLog(`Credential: ${JSON.stringify({
+                    id: credential.id,
+                    rawId: arrayBufferToBase64URL(credential.rawId),
+                    type: credential.type,
+                    response: {
+                        attestationObject: arrayBufferToBase64URL(credential.response.attestationObject),
+                        clientDataJSON: arrayBufferToBase64URL(credential.response.clientDataJSON)
+                    }
+                }, null, 2)}`);
                 const registrationResponse = await fetch('/register/finish', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
+                        username,
                         id: credential.id,
-                        rawId: credential.id,
+                        rawId: arrayBufferToBase64URL(credential.rawId),
                         type: credential.type,
                         response: {
                             attestationObject: arrayBufferToBase64URL(credential.response.attestationObject),
                             clientDataJSON: arrayBufferToBase64URL(credential.response.clientDataJSON)
                         }
                     })
-                })
+                });
+        
+                debugLog(`Registration response status: ${registrationResponse.status}`);
                 if (registrationResponse.ok) {
-                    alert('Registration successful')
+                    const contentType = registrationResponse.headers.get("content-type");
+                    if (contentType && contentType.indexOf("application/json") !== -1) {
+                        const result = await registrationResponse.json();
+                        alert('Registration successful: ' + (result.message || ''));
+                    } else {
+                        const result = await registrationResponse.text();
+                        alert('Registration successful: ' + result);
+                    }
                 } else {
-                    alert('Registration failed')
+                    const errorText = await registrationResponse.text();
+                    throw new Error(errorText || 'Registration failed');
                 }
             } catch (error) {
-                console.error(error)
-                alert('Registration failed')
+                console.error(error);
+                debugLog(`Registration error: ${error.message}`);
+                alert('Registration failed: ' + error.message);
+            } finally {
+                button.disabled = false;
+                hideLoading();
             }
         }
-        
+
         async function login() {
-            const username = document.getElementById('loginUsername').value;
-            if (!username) {
-                alert('Username is required');
-                return;
-            }
-        
+            const button = document.getElementById('loginButton');
+            button.disabled = true;
+            showLoading();
+
             try {
-                // ログインの開始
+                const username = document.getElementById('loginUsername').value;
+                if (!username) {
+                    throw new Error('Username is required');
+                }
+
+                debugLog('Starting login process');
                 const optionsResponse = await webAuthnAPI('/login/begin', username);
-                
-                // 公開鍵の取得オプションを取得
+
+                debugLog('Getting credential');
+                if (!optionsResponse || !optionsResponse.publicKey) {
+                    throw new Error('Invalid options received from server');
+                }
+
                 const publicKeyCredentialRequestOptions = {
-                    ...optionsResponse,
-                    challenge: base64URLToUint8Array(optionsResponse.challenge),
-                    allowCredentials: optionsResponse.allowCredentials.map(cred => ({
-                        ...cred,
-                        id: base64URLToUint8Array(cred.id),
-                    })),
+                    ...optionsResponse.publicKey,
+                    challenge: base64URLToUint8Array(optionsResponse.publicKey.challenge),
+                    allowCredentials: optionsResponse.publicKey.allowCredentials ? 
+                optionsResponse.publicKey.allowCredentials.map(cred => ({
+                    ...cred,
+                    id: base64URLToUint8Array(cred.id),
+                })) : [],
                 };
-        
-                // ブラウザのCredentials APIを使用して認証情報を取得
+
+                debugLog(`Prepared options: ${JSON.stringify(publicKeyCredentialRequestOptions)}`);
+
                 const credential = await navigator.credentials.get({
                     publicKey: publicKeyCredentialRequestOptions
                 });
-        
-                // 取得された認証情報をサーバーに送信
+
+                debugLog('Credential retrieved, finishing login');
+                debugLog(`Credential: ${JSON.stringify({
+                    id: credential.id,
+                    type: credential.type,
+                    rawId: arrayBufferToBase64URL(credential.rawId)
+                })}`);
+
                 const loginResponse = await fetch('/login/finish', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         username,
@@ -125,21 +213,27 @@
                             clientDataJSON: arrayBufferToBase64URL(credential.response.clientDataJSON),
                             signature: arrayBufferToBase64URL(credential.response.signature),
                             userHandle: credential.response.userHandle ? arrayBufferToBase64URL(credential.response.userHandle) : null,
-                        },
-                    }),
+                        }
+                    })
                 });
-        
+
+                debugLog(`Login response status: ${loginResponse.status}`);
                 if (loginResponse.ok) {
-                    alert('Login successful!');
+                    alert('Login successful');
                 } else {
-                    throw new Error('Login failed');
+                    const errorText = await loginResponse.text();
+                    throw new Error(errorText || 'Login failed');
                 }
             } catch (error) {
-                console.error('Error during login:', error);
+                console.error(error);
+                debugLog(`Login error: ${error.message}`);
                 alert('Login failed: ' + error.message);
+            } finally {
+                button.disabled = false;
+                hideLoading();
             }
         }
-        
+
         function base64URLToUint8Array(base64URL) {
             const padding = '='.repeat((4 - base64URL.length % 4) % 4);
             const base64 = (base64URL + padding)
@@ -156,7 +250,15 @@
         function arrayBufferToBase64URL(buffer) {
             const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
             return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        }        
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
     </script>
 </body>
 </html>
